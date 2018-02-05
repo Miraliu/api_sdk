@@ -28,7 +28,8 @@ class BWUser:
         password:   Brandwatch password.
         token:      Access token.
     """
-    def __init__(self, token=None, token_path="tokens.txt", username=None, password=None, grant_type="api-password", client_id="brandwatch-api-client", apiurl="https://newapi.brandwatch.com/"):
+    def __init__(self, token=None, token_path="tokens.txt", username=None, password=None, grant_type="api-password",
+                 client_id="brandwatch-api-client", apiurl="https://newapi.brandwatch.com/", test_auth=False):
         """
         Creates a BWUser object.
 
@@ -42,9 +43,13 @@ class BWUser:
         self.oauthpath = "oauth/token"
 
         if token:
-            self.username, self.token = self._test_auth(username, token)
-            if token_path is not None:
-                self._write_auth(token_path)
+            if test_auth:
+                self.username, self.token = self._test_auth(username, token)
+                if token_path is not None:
+                    self._write_auth(token_path)
+            else:
+                self.username = username
+                self.token = token
         elif username is not None and password is not None:
             self.username, self.token = self._get_auth(username, password, token_path, grant_type, client_id)
             if token_path is not None:
@@ -156,7 +161,7 @@ class BWUser:
 
         valid_search = self.request(verb=requests.get, address="query-validation/searchwithin", params=kwargs)
 
-    def request(self, verb, address, params={}, data={}):
+    def request(self, verb, address, params={}, data={}, retry=5):
         """
         Makes a request to the Brandwatch API.
 
@@ -170,9 +175,9 @@ class BWUser:
             The response json
         """
         return self.bare_request(verb=verb, address_root=self.apiurl, address_suffix=address, access_token=self.token,
-                                 params=params, data=data)
+                                 params=params, data=data, retry=retry)
 
-    def bare_request(self, verb, address_root, address_suffix, access_token="", params={}, data={}):
+    def bare_request(self, verb, address_root, address_suffix, access_token="", params={}, data={}, retry=5):
         """
         Makes a request to the Brandwatch API.
 
@@ -187,24 +192,32 @@ class BWUser:
         Returns:
             The response json
         """
-        time.sleep(.5)
         if access_token:
             params["access_token"] = access_token
 
-        if data == {}:
-            response = verb(address_root + address_suffix, params=params)
-        else:
-            response = verb(address_root + address_suffix,
-                            params=params,
-                            data=data,
-                            headers={"Content-type": "application/json"})
-
-        if "errors" in response.json() and response.json()["errors"]:
-            logger.error("There was an error with this request: \n{}\n{}\n{}".format(response.url, data, response.json()["errors"]))
-            raise RuntimeError(response.json()["errors"])
-
-        logger.debug(response.url)
-        return response.json()
+        attempt = 0
+        while attempt < retry:
+            try:
+                if data == {}:
+                    response = verb(address_root + address_suffix, params=params)
+                else:
+                    response = verb(address_root + address_suffix,
+                                    params=params,
+                                    data=data,
+                                    headers={"Content-type": "application/json"})
+                    response.raise_for_status()
+                response = response.json()
+                if "errors" in response and response["errors"]:
+                    logger.error(
+                        "There was an error with this request: \n{}\n{}\n{}".format(address_root + address_suffix,
+                                                                                    data, response["errors"]))
+                    raise RuntimeError(response["errors"])
+            except Exception:
+                time.sleep(2 ** attempt)
+                attempt += 1
+            else:
+                logger.debug(address_root + address_suffix)
+                return response
 
 
 class BWProject(BWUser):
